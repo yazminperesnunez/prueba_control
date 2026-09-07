@@ -1,6 +1,6 @@
 // app scrip/app.js
 
-const URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbxKIvBA2X0OdKp7DZQHJtPYQhK9ZyLoHeyhlWGAu4NlkKWDupBSgCe5AlRfWZyaXrl2/exec";
+const URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbzAOnPrWpOn-HRfgH86WxniEp46zLV91kMGf8ZkiztYHRDAxtz1SF7WUqo8mRmGfVpt/exec";
 
 // Función genérica para enviar peticiones a Apps Script
 async function fetchAppsScript(accion, payload) {
