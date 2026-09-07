@@ -1,14 +1,18 @@
 // app scrip/app.js
-
+// app.js - Conexión corregida para evitar bloqueo CORS
 const URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbzAOnPrWpOn-HRfgH86WxniEp46zLV91kMGf8ZkiztYHRDAxtz1SF7WUqo8mRmGfVpt/exec";
 
-// Función genérica para enviar peticiones a Apps Script
 async function fetchAppsScript(accion, payload) {
   try {
+    // Enviamos el objeto codificado como Text/Plain para que Google Apps Script lo reciba sin bloqueo CORS
     const response = await fetch(URL_APPS_SCRIPT, {
       method: "POST",
+      headers: {
+        "Content-Type": "text/plain;charset=utf-8",
+      },
       body: JSON.stringify({ accion, ...payload })
     });
+    
     return await response.json();
   } catch (error) {
     console.error("Error al conectar con Apps Script:", error);
