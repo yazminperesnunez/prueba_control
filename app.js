@@ -1,231 +1,365 @@
 // app scrip/app.js
-// app.js - Conexión corregida para evitar bloqueo CORS
-const URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbzAOnPrWpOn-HRfgH86WxniEp46zLV91kMGf8ZkiztYHRDAxtz1SF7WUqo8mRmGfVpt/exec";
 
-async function fetchAppsScript(accion, payload) {
-  try {
-    // Enviamos el objeto codificado como Text/Plain para que Google Apps Script lo reciba sin bloqueo CORS
-    const response = await fetch(URL_APPS_SCRIPT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain;charset=utf-8",
-      },
-      body: JSON.stringify({ accion, ...payload })
-    });
-    
-    return await response.json();
-  } catch (error) {
-    console.error("Error al conectar con Apps Script:", error);
-    throw error;
-  }
-}
+// 1. INICIALIZAR SUPABASE
+const SUPABASE_URL = "https://ngrlretmgxbgnmoanfke.supabase.co";
+// ATENCIÓN: Debes reemplazar esta cadena por tu clave 'anon' pública real de Supabase.
+const SUPABASE_ANON_KEY = "Qypv4yA5XA0iljRXkRPpiw_vwGDdpFi";
+
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ==========================================
 // MÓDULO: DASHBOARD (index.html)
 // ==========================================
-function cargarDashboard() {
-  // Mostramos estado de carga
+async function cargarDashboard() {
   document.getElementById("kpiTotalCompras").innerText = "...";
   document.getElementById("kpiTotalPagado").innerText = "...";
   document.getElementById("kpiSaldoPendiente").innerText = "...";
+  document.getElementById("kpiComplementos").innerText = "...";
 
-  fetchAppsScript("obtenerMetricas", {})
-    .then(data => {
-      document.getElementById("kpiTotalCompras").innerText = formatoMoneda(data.totalCompras || 0);
-      document.getElementById("kpiTotalPagado").innerText = formatoMoneda(data.totalPagado || 0);
-      document.getElementById("kpiSaldoPendiente").innerText = formatoMoneda(data.saldoPendiente || 0);
-      document.getElementById("kpiComplementos").innerText = data.complementosFaltantes || 0;
-    })
-    .catch(() => alert("No se pudo cargar la información del Dashboard."));
+  try {
+    // Obtener Procesos que no estén CERRADOS
+    const { data: procesos, error: errProcesos } = await supabase
+      .from('procesos')
+      .select('monto_acordado, saldo_pendiente')
+      .neq('estatus', 'CERRADO');
+
+    if (errProcesos) throw errProcesos;
+
+    let totalCompras = 0;
+    let saldoPendiente = 0;
+    procesos.forEach(p => {
+      totalCompras += p.monto_acordado;
+      saldoPendiente += p.saldo_pendiente;
+    });
+
+    // Obtener Pagos para calcular total pagado y complementos faltantes
+    const { data: pagos, error: errPagos } = await supabase
+      .from('pagos')
+      .select('monto_abono, estatus_cfdi');
+
+    if (errPagos) throw errPagos;
+
+    let totalPagado = 0;
+    let complementosFaltantes = 0;
+    pagos.forEach(p => {
+      totalPagado += p.monto_abono;
+      if (p.estatus_cfdi === 'PENDIENTE_COMPLEMENTO') {
+        complementosFaltantes++;
+      }
+    });
+
+    // Actualizar UI
+    document.getElementById("kpiTotalCompras").innerText = formatoMoneda(totalCompras);
+    document.getElementById("kpiTotalPagado").innerText = formatoMoneda(totalPagado);
+    document.getElementById("kpiSaldoPendiente").innerText = formatoMoneda(saldoPendiente);
+    document.getElementById("kpiComplementos").innerText = complementosFaltantes;
+
+  } catch (error) {
+    console.error("Error cargando dashboard:", error);
+    alert("No se pudo cargar la información del Dashboard desde Supabase.");
+  }
 }
 
 // ==========================================
 // MÓDULO: PROVEEDORES (proveedores.html)
 // ==========================================
-function registrarProveedor(event) {
+async function registrarProveedor(event) {
   event.preventDefault();
   const form = event.target;
   const btnSubmit = form.querySelector('button[type="submit"]');
   btnSubmit.disabled = true;
   btnSubmit.innerText = "Procesando...";
 
-  // Recolectar datos
-  const payload = {
-    rfc: form.rfc.value,
-    razonSocial: form.razonSocial.value,
-    regimenFiscal: form.regimenFiscal.value,
-    correo: form.correo.value,
-    telefono: form.telefono.value,
-    direccion: form.direccion.value
-  };
+  try {
+    const rfc = form.rfc.value.trim().toUpperCase();
 
-  // Convertir archivos a Base64 si existen (simulado para el ejemplo)
-  const fileInput = form.csf.files[0];
-  if (fileInput) {
-    leerArchivoBase64(fileInput).then(base64Data => {
-      payload.csfFile = {
-        name: fileInput.name,
-        mimeType: fileInput.type,
-        data: base64Data
-      };
-      enviarDatosProveedor(payload, btnSubmit, form);
-    });
-  } else {
-    enviarDatosProveedor(payload, btnSubmit, form);
+    // Subir CSF a Supabase Storage (bucket 'expedientes')
+    const fileInput = form.csf.files[0];
+    let csfUrl = "";
+    if (fileInput) {
+      const filePath = `proveedores/${rfc}/${Date.now()}_csf_${fileInput.name}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('expedientes')
+        .upload(filePath, fileInput);
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage.from('expedientes').getPublicUrl(filePath);
+      csfUrl = publicUrl;
+    }
+
+    // Insertar en tabla proveedores
+    const { data, error } = await supabase
+      .from('proveedores')
+      .insert([
+        {
+          rfc: rfc,
+          razon_social: form.razonSocial.value.toUpperCase(),
+          regimen_fiscal: form.regimenFiscal.value,
+          correo: form.correo.value,
+          telefono: form.telefono.value,
+          direccion: form.direccion.value,
+          carpeta_url: csfUrl, // Usamos este campo temporalmente para el doc, o agregas uno nuevo
+          estatus: 'ACTIVO'
+        }
+      ]);
+
+    if (error) throw error;
+
+    alert("Proveedor registrado exitosamente en Supabase.");
+    form.reset();
+  } catch (error) {
+    console.error(error);
+    alert("Error al registrar proveedor: " + error.message);
+  } finally {
+    btnSubmit.disabled = false;
+    btnSubmit.innerText = "Guardar y Subir a Drive"; // O 'Subir a Supabase'
   }
-}
-
-function enviarDatosProveedor(payload, btn, form) {
-  fetchAppsScript("registrarProveedor", payload)
-    .then(res => {
-      if (res.success) {
-        alert("Proveedor registrado exitosamente en Sheets y Drive.");
-        form.reset();
-      } else {
-        alert("Error al registrar proveedor: " + res.error);
-      }
-    })
-    .finally(() => {
-      btn.disabled = false;
-      btn.innerText = "Guardar y Subir a Drive";
-    });
 }
 
 // ==========================================
 // MÓDULO: PROCESOS (procesos.html)
 // ==========================================
-function registrarProceso(event) {
+async function cargarSelectProveedores() {
+  const select = document.querySelector('select[name="proveedorId"]');
+  if (!select) return;
+
+  const { data, error } = await supabase
+    .from('proveedores')
+    .select('id, rfc, razon_social')
+    .eq('estatus', 'ACTIVO');
+
+  if (error) {
+    console.error(error);
+    return;
+  }
+
+  select.innerHTML = '<option value="">Selecciona el proveedor...</option>';
+  data.forEach(p => {
+    select.innerHTML += `<option value="${p.id}">${p.rfc} - ${p.razon_social}</option>`;
+  });
+}
+
+async function cargarSelectProcesos(selector, filterAbiertos = false) {
+  const select = document.querySelector(selector);
+  if (!select) return;
+
+  let query = supabase.from('procesos').select('id, concepto, saldo_pendiente');
+  if (filterAbiertos) {
+    query = query.gt('saldo_pendiente', 0).neq('estatus', 'CERRADO');
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error(error);
+    return;
+  }
+
+  select.innerHTML = '<option value="">Selecciona un proceso...</option>';
+  data.forEach(p => {
+    select.innerHTML += `<option value="${p.id}">PR-${p.id} - ${p.concepto} (Saldo: $${p.saldo_pendiente})</option>`;
+  });
+}
+
+async function registrarProceso(event) {
   event.preventDefault();
   const form = event.target;
   const btnSubmit = form.querySelector('button[type="submit"]');
   btnSubmit.disabled = true;
   btnSubmit.innerText = "Procesando...";
 
-  const payload = {
-    proveedorId: form.proveedorId.value,
-    concepto: form.concepto.value,
-    monto: form.monto.value
-  };
+  try {
+    const proveedorId = form.proveedorId.value;
+    const monto = parseFloat(form.monto.value);
 
-  const fileInput = form.cotizacionFile.files[0];
-  if (fileInput) {
-    leerArchivoBase64(fileInput).then(base64Data => {
-      payload.cotizacionFile = { name: fileInput.name, mimeType: fileInput.type, data: base64Data };
-      ejecutarFetch(form, "registrarProceso", payload, btnSubmit, "Aperturar y Generar Carpeta");
-    });
+    // Subir Cotización a Supabase Storage
+    const fileInput = form.cotizacionFile.files[0];
+    let cotizacionUrl = "";
+    if (fileInput) {
+      const filePath = `procesos/nuevo/${Date.now()}_${fileInput.name}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('expedientes')
+        .upload(filePath, fileInput);
+      if (uploadError) throw uploadError;
+      const { data: { publicUrl } } = supabase.storage.from('expedientes').getPublicUrl(filePath);
+      cotizacionUrl = publicUrl;
+    }
+
+    const { error } = await supabase
+      .from('procesos')
+      .insert([{
+        proveedor_id: proveedorId,
+        concepto: form.concepto.value,
+        monto_acordado: monto,
+        saldo_pendiente: monto, // Inicialmente el saldo es el monto total
+        cotizacion_url: cotizacionUrl,
+        estatus: 'EN_COTIZACION'
+      }]);
+
+    if (error) throw error;
+    alert("Proceso aperturado correctamente en Supabase.");
+    form.reset();
+  } catch (error) {
+    alert("Error: " + error.message);
+  } finally {
+    btnSubmit.disabled = false;
+    btnSubmit.innerText = "Aperturar";
   }
 }
 
-function actualizarProceso(event) {
+async function actualizarProceso(event) {
   event.preventDefault();
   const form = event.target;
   const btnSubmit = form.querySelector('button[type="submit"]');
   btnSubmit.disabled = true;
-  btnSubmit.innerText = "Procesando...";
 
-  const payload = {
-    procesoId: form.procesoId.value,
-    estatus: form.estatus.value,
-    esquemaPago: form.esquemaPago.value
-  };
+  try {
+    const procesoId = form.procesoId.value;
 
-  const fileInput = form.contratoFile.files[0];
-  if (fileInput) {
-    leerArchivoBase64(fileInput).then(base64Data => {
-      payload.contratoFile = { name: fileInput.name, mimeType: fileInput.type, data: base64Data };
-      ejecutarFetch(form, "actualizarProceso", payload, btnSubmit, "Guardar Cambios");
-    });
-  } else {
-    ejecutarFetch(form, "actualizarProceso", payload, btnSubmit, "Guardar Cambios");
+    let contratoUrl = "";
+    const fileInput = form.contratoFile.files[0];
+    if (fileInput) {
+      const filePath = `procesos/${procesoId}/${Date.now()}_contrato_${fileInput.name}`;
+      const { error: uploadError } = await supabase.storage.from('expedientes').upload(filePath, fileInput);
+      if (uploadError) throw uploadError;
+      const { data: { publicUrl } } = supabase.storage.from('expedientes').getPublicUrl(filePath);
+      contratoUrl = publicUrl;
+    }
+
+    const updates = {
+      estatus: form.estatus.value,
+      esquema_pago: form.esquemaPago.value
+    };
+    if (contratoUrl) updates.contrato_url = contratoUrl;
+
+    const { error } = await supabase
+      .from('procesos')
+      .update(updates)
+      .eq('id', procesoId);
+
+    if (error) throw error;
+    alert("Proceso actualizado exitosamente.");
+    form.reset();
+  } catch (error) {
+    alert("Error: " + error.message);
+  } finally {
+    btnSubmit.disabled = false;
   }
 }
 
 // ==========================================
 // MÓDULO: PAGOS (pagos.html)
 // ==========================================
-function registrarPago(event) {
+async function registrarPago(event) {
   event.preventDefault();
   const form = event.target;
   const btnSubmit = form.querySelector('button[type="submit"]');
   btnSubmit.disabled = true;
-  btnSubmit.innerText = "Procesando...";
 
-  const payload = {
-    procesoId: form.procesoId.value,
-    montoAbonado: form.montoAbonado.value,
-    fechaTransferencia: form.fechaTransferencia.value
-  };
+  try {
+    const procesoId = form.procesoId.value;
+    const montoAbono = parseFloat(form.montoAbonado.value);
 
-  const fileInput = form.comprobanteFile.files[0];
-  if (fileInput) {
-    leerArchivoBase64(fileInput).then(base64Data => {
-      payload.comprobanteFile = { name: fileInput.name, mimeType: fileInput.type, data: base64Data };
-      ejecutarFetch(form, "registrarPago", payload, btnSubmit, "Aplicar Pago");
-    });
+    // 1. Subir Ficha de pago a Supabase Storage
+    const fileInput = form.comprobanteFile.files[0];
+    let comprobanteUrl = "";
+    if (fileInput) {
+      const filePath = `pagos/${procesoId}/${Date.now()}_ficha_${fileInput.name}`;
+      const { error: uploadError } = await supabase.storage.from('expedientes').upload(filePath, fileInput);
+      if (uploadError) throw uploadError;
+      comprobanteUrl = supabase.storage.from('expedientes').getPublicUrl(filePath).data.publicUrl;
+    }
+
+    // 2. Obtener saldo actual del proceso
+    const { data: proceso, error: procError } = await supabase
+      .from('procesos')
+      .select('saldo_pendiente')
+      .eq('id', procesoId)
+      .single();
+
+    if (procError) throw procError;
+    if (montoAbono > proceso.saldo_pendiente) throw new Error("El abono no puede ser mayor al saldo.");
+
+    const nuevoSaldo = proceso.saldo_pendiente - montoAbono;
+    const nuevoEstatusProc = (nuevoSaldo <= 0) ? 'PAGADO_TOTAL' : 'EN_PROGRESO';
+
+    // 3. Insertar Pago
+    const { data: nuevoPago, error: insertPagoError } = await supabase
+      .from('pagos')
+      .insert([{
+        proceso_id: procesoId,
+        monto_abono: montoAbono,
+        fecha_pago: form.fechaTransferencia.value,
+        comprobante_url: comprobanteUrl,
+        estatus_cfdi: 'PENDIENTE_COMPLEMENTO'
+      }])
+      .select('id')
+      .single();
+
+    if (insertPagoError) throw insertPagoError;
+
+    // 4. Actualizar Saldo de Proceso
+    const { error: updateProcError } = await supabase
+      .from('procesos')
+      .update({ saldo_pendiente: nuevoSaldo, estatus: nuevoEstatusProc })
+      .eq('id', procesoId);
+
+    if (updateProcError) throw updateProcError;
+
+    alert(`Pago registrado. Saldo actual del proceso: $${nuevoSaldo}`);
+    form.reset();
+  } catch (error) {
+    alert("Error: " + error.message);
+  } finally {
+    btnSubmit.disabled = false;
   }
 }
 
 // ==========================================
 // MÓDULO: PORTAL (portal.html)
 // ==========================================
-function subirCFDI(event) {
+async function subirCFDI(event) {
   event.preventDefault();
   const form = event.target;
   const btnSubmit = form.querySelector('button[type="submit"]');
   btnSubmit.disabled = true;
-  btnSubmit.innerText = "Subiendo...";
 
-  const payload = {
-    refPago: document.getElementById('ref-pago') ? document.getElementById('ref-pago').innerText : ''
-  };
+  try {
+    const refPagoId = document.getElementById('ref-pago') ? document.getElementById('ref-pago').innerText.replace('PAG-', '') : '';
 
-  const xmlInput = form.xmlFile.files[0];
-  const pdfInput = form.pdfFile ? form.pdfFile.files[0] : null;
+    if (!refPagoId) throw new Error("No hay referencia de pago válida.");
 
-  leerArchivoBase64(xmlInput).then(xmlData => {
-    payload.xmlFile = { name: xmlInput.name, mimeType: xmlInput.type, data: xmlData };
-    if (pdfInput) {
-      leerArchivoBase64(pdfInput).then(pdfData => {
-        payload.pdfFile = { name: pdfInput.name, mimeType: pdfInput.type, data: pdfData };
-        enviarCFDI(payload, btnSubmit, form);
-      });
-    } else {
-      enviarCFDI(payload, btnSubmit, form);
+    const xmlInput = form.xmlFile.files[0];
+    const pdfInput = form.pdfFile ? form.pdfFile.files[0] : null;
+
+    let xmlUrl = "";
+    if (xmlInput) {
+      const filePath = `cfdis/${refPagoId}/${Date.now()}_${xmlInput.name}`;
+      const { error: uploadError } = await supabase.storage.from('expedientes').upload(filePath, xmlInput);
+      if (uploadError) throw uploadError;
+      xmlUrl = supabase.storage.from('expedientes').getPublicUrl(filePath).data.publicUrl;
     }
-  });
-}
 
-function enviarCFDI(payload, btnSubmit, form) {
-  fetchAppsScript("subirCFDI", payload).then(res => {
-    if (res.success) {
-      document.getElementById('portal-content').innerHTML = `
-        <div class="text-center py-4">
-          <h3 class="fw-bold text-success">¡Documentos Recibidos!</h3>
-          <p class="text-secondary">El CFDI ha sido validado correctamente.</p>
-        </div>`;
-    } else {
-      alert("Error: " + res.error);
-      btnSubmit.disabled = false;
-      btnSubmit.innerText = "Subir CFDI";
-    }
-  });
-}
+    const { error: updateError } = await supabase
+      .from('pagos')
+      .update({
+        estatus_cfdi: 'COMPLETO',
+        cfdi_url: xmlUrl
+      })
+      .eq('id', refPagoId);
 
-// Función genérica para reducir código repetido
-function ejecutarFetch(form, accion, payload, btnSubmit, originalText) {
-  fetchAppsScript(accion, payload)
-    .then(res => {
-      if (res.success) {
-        alert("Operación exitosa");
-        form.reset();
-      } else {
-        alert("Error: " + res.error);
-      }
-    })
-    .finally(() => {
-      btnSubmit.disabled = false;
-      btnSubmit.innerText = originalText;
-    });
+    if (updateError) throw updateError;
+
+    document.getElementById('portal-content').innerHTML = `
+      <div class="text-center py-4">
+        <h3 class="fw-bold text-success">¡Documentos Recibidos!</h3>
+        <p class="text-secondary">El CFDI ha sido validado en Supabase.</p>
+      </div>`;
+
+  } catch (error) {
+    alert("Error: " + error.message);
+    btnSubmit.disabled = false;
+  }
 }
 
 // ==========================================
@@ -235,11 +369,13 @@ function formatoMoneda(valor) {
   return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(valor);
 }
 
-function leerArchivoBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(',')[1]); // Solo la parte base64
-    reader.onerror = error => reject(error);
-    reader.readAsDataURL(file);
-  });
-}
+// Al cargar la página, ejecutar funciones según la vista
+document.addEventListener("DOMContentLoaded", () => {
+  if (window.location.pathname.includes('procesos.html')) {
+    cargarSelectProveedores();
+    cargarSelectProcesos('select[name="procesoId"]', false); // Para seguimiento
+  }
+  if (window.location.pathname.includes('pagos.html')) {
+    cargarSelectProcesos('select[name="procesoId"]', true); // Solo con saldo pendiente
+  }
+});
