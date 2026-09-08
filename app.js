@@ -54,9 +54,50 @@ async function cargarDashboard() {
     document.getElementById("kpiSaldoPendiente").innerText = formatoMoneda(saldoPendiente);
     document.getElementById("kpiComplementos").innerText = complementosFaltantes;
 
+    cargarProcesosActivos();
+
   } catch (error) {
     console.error("Error cargando dashboard:", error);
     alert("No se pudo cargar la información del Dashboard desde Supabase.");
+  }
+}
+
+async function cargarProcesosActivos() {
+  const tbody = document.getElementById("tablaProcesosDashboard");
+  if (!tbody) return;
+
+  try {
+    const { data: procesos, error } = await supabase
+      .from('procesos')
+      .select('*, proveedores(razon_social)')
+      .neq('estatus', 'CERRADO')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    tbody.innerHTML = '';
+    if (procesos.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center">No hay procesos activos.</td></tr>';
+      return;
+    }
+
+    procesos.forEach(p => {
+      const proveedorNombre = p.proveedores ? p.proveedores.razon_social : 'Desconocido';
+      const fila = `
+        <tr>
+          <td><span class="fw-medium">PR-${p.id}</span><br><small class="text-secondary">${p.concepto}</small></td>
+          <td>${proveedorNombre}</td>
+          <td>${formatoMoneda(p.monto_acordado)}</td>
+          <td><span class="text-danger fw-medium">${formatoMoneda(p.saldo_pendiente)}</span></td>
+          <td><span class="badge bg-primary">${p.estatus}</span></td>
+        </tr>
+      `;
+      tbody.innerHTML += fila;
+    });
+
+  } catch (error) {
+    console.error("Error cargando procesos:", error);
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Error al cargar procesos.</td></tr>';
   }
 }
 
@@ -108,12 +149,65 @@ async function registrarProveedor(event) {
 
     alert("Proveedor registrado exitosamente en Supabase.");
     form.reset();
+    
+    // Cerrar modal si existe
+    if (typeof bootstrap !== 'undefined') {
+      const modalEl = document.getElementById('modalAltaProveedor');
+      if (modalEl) {
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
+      }
+    }
+    
+    // Recargar tabla de proveedores
+    cargarProveedores();
+    
   } catch (error) {
     console.error(error);
     alert("Error al registrar proveedor: " + error.message);
   } finally {
     btnSubmit.disabled = false;
-    btnSubmit.innerText = "Guardar y Subir a Drive"; // O 'Subir a Supabase'
+    btnSubmit.innerText = "Guardar Proveedor"; 
+  }
+}
+
+async function cargarProveedores() {
+  const tbody = document.getElementById("tablaProveedores");
+  if (!tbody) return;
+
+  try {
+    const { data: proveedores, error } = await supabase
+      .from('proveedores')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    tbody.innerHTML = '';
+    if (proveedores.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center">No hay proveedores registrados.</td></tr>';
+      return;
+    }
+
+    proveedores.forEach(p => {
+      const docLink = p.carpeta_url 
+        ? `<a href="${p.carpeta_url}" target="_blank" class="btn btn-sm btn-outline-primary">Ver Documentos</a>` 
+        : '<span class="text-secondary small">Sin documentos</span>';
+        
+      const fila = `
+        <tr>
+          <td class="fw-medium">${p.rfc}</td>
+          <td>${p.razon_social}</td>
+          <td>${p.correo}</td>
+          <td>${p.telefono || '-'}</td>
+          <td>${docLink}</td>
+        </tr>
+      `;
+      tbody.innerHTML += fila;
+    });
+  } catch (error) {
+    console.error("Error cargando proveedores:", error);
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Error al cargar proveedores.</td></tr>';
   }
 }
 
@@ -371,6 +465,9 @@ function formatoMoneda(valor) {
 
 // Al cargar la página, ejecutar funciones según la vista
 document.addEventListener("DOMContentLoaded", () => {
+  if (window.location.pathname.includes('proveedores.html')) {
+    cargarProveedores();
+  }
   if (window.location.pathname.includes('procesos.html')) {
     cargarSelectProveedores();
     cargarSelectProcesos('select[name="procesoId"]', false); // Para seguimiento

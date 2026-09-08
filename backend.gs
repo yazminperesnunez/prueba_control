@@ -6,8 +6,8 @@
  * 3. Publica como Aplicación Web (Web App), con acceso a "Cualquier persona".
  */
 
-const SHEET_ID = 'TU_GOOGLE_SHEET_ID_AQUI'; // Cambia esto
-const DRIVE_FOLDER_ID = 'TU_CARPETA_DRIVE_PRINCIPAL_ID_AQUI'; // Cambia esto
+const SHEET_ID = '1YMUl2NumIZ-HGbuJP-l9eYC64wwG5ZJe0aAOvRQcCFY'; // Cambia esto
+const DRIVE_FOLDER_ID = '1xOdpr9v0UUq8wOfjtCovxOHC2IfOfbrs'; // Cambia esto
 
 function doPost(e) {
   try {
