@@ -266,11 +266,11 @@ async function registrarProceso(event) {
     const proveedorId = form.proveedorId.value;
     const monto = parseFloat(form.monto.value);
 
-    // Subir Cotización a Supabase Storage
+    // Subir Cotización a Supabase Storage organizada por carpeta de proveedor
     const fileInput = form.cotizacionFile.files[0];
     let cotizacionUrl = "";
     if (fileInput) {
-      const filePath = `procesos/nuevo/${Date.now()}_${fileInput.name}`;
+      const filePath = `proveedores/${proveedorId}/procesos/${Date.now()}_${fileInput.name}`;
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('expedientes')
         .upload(filePath, fileInput);
